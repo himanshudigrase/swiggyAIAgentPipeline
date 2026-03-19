@@ -1,0 +1,103 @@
+# Render.com Infrastructure as Code
+# Deploys: API (web service) + Worker (background worker) + Frontend (web service)
+# PostgreSQL and Redis are provisioned as managed Render services.
+#
+# SETUP:
+# 1. Push this repo to GitHub
+# 2. Go to render.com > New > Blueprint
+# 3. Connect your GitHub repo - Render reads this file automatically
+# 4. Add env var: GEMINI_API_KEY (in Render dashboard, under each service)
+
+services:
+  # ─── FastAPI Backend ───────────────────────────────────────────────────────
+  - type: web
+    name: eval-api
+    env: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: eval-postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          name: eval-redis
+          type: redis
+          property: connectionString
+      - key: PYTHONPATH
+        value: /app
+      - key: LLM_PROVIDER
+        value: gemini
+      - key: LLM_MOCK_MODE
+        value: "false"
+      - key: LLM_MODEL
+        value: gemini-1.5-flash
+      - key: LATENCY_THRESHOLD_MS
+        value: "1000"
+      - key: PATTERN_SCAN_WINDOW
+        value: "100"
+      - key: AUTO_LABEL_CONFIDENCE_THRESHOLD
+        value: "0.8"
+      - key: ANNOTATOR_AGREEMENT_THRESHOLD
+        value: "0.6"
+      # Add your Gemini key in Render dashboard (Environment tab)
+      # - key: GEMINI_API_KEY
+      #   value: your-key-here
+
+  # ─── Celery Worker ─────────────────────────────────────────────────────────
+  - type: worker
+    name: eval-worker
+    env: docker
+    dockerfilePath: ./backend/Dockerfile.worker
+    dockerContext: ./backend
+    plan: free
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: eval-postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          name: eval-redis
+          type: redis
+          property: connectionString
+      - key: PYTHONPATH
+        value: /app
+      - key: LLM_PROVIDER
+        value: gemini
+      - key: LLM_MOCK_MODE
+        value: "false"
+      - key: LLM_MODEL
+        value: gemini-1.5-flash
+      - key: LATENCY_THRESHOLD_MS
+        value: "1000"
+      # Add your Gemini key in Render dashboard (Environment tab)
+      # - key: GEMINI_API_KEY
+      #   value: your-key-here
+
+  # ─── Streamlit Frontend ────────────────────────────────────────────────────
+  - type: web
+    name: eval-frontend
+    env: docker
+    dockerfilePath: ./frontend/Dockerfile
+    dockerContext: ./frontend
+    plan: free
+    envVars:
+      # The API_BASE_URL must point to the deployed eval-api URL
+      # Set this AFTER the API is deployed in Render dashboard
+      - key: API_BASE_URL
+        value: https://eval-api.onrender.com
+
+# ─── Managed Databases ─────────────────────────────────────────────────────
+databases:
+  - name: eval-postgres
+    plan: free
+    databaseName: evaldb
+    user: evaluser
+
+  - name: eval-redis
+    plan: free
+    ipAllowList: []

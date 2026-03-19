@@ -1,0 +1,51 @@
+name: CI — Lint & Build Check
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-check:
+    runs-on: ubuntu-latest
+    name: Python lint + import check
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        working-directory: backend
+        run: pip install -r requirements.txt
+
+      - name: Run import check (fast smoke test)
+        working-directory: backend
+        env:
+          DATABASE_URL: "postgresql://user:pass@localhost:5432/testdb"
+          REDIS_URL: "redis://localhost:6379/0"
+          GEMINI_API_KEY: "mock"
+          LLM_MOCK_MODE: "true"
+          PYTHONPATH: "."
+        run: python -c "import main; print('✅ All imports OK')"
+
+  docker-build:
+    runs-on: ubuntu-latest
+    name: Docker build check
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build backend image
+        run: docker build -t eval-api ./backend -f ./backend/Dockerfile
+
+      - name: Build worker image
+        run: docker build -t eval-worker ./backend -f ./backend/Dockerfile.worker
+
+      - name: Build frontend image
+        run: docker build -t eval-frontend ./frontend
