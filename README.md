@@ -26,26 +26,26 @@
 │              FastAPI Backend (Port 8000)                  │
 │  /ingest  /evaluations  /feedback  /suggestions  /meta   │
 │              Swagger UI at /docs                          │
-└──────┬───────────────────────────────┬───────────────────┘
-       │ store                         │ enqueue job
-       ▼                               ▼
-┌─────────────┐               ┌────────────────────┐
-│ PostgreSQL  │               │  Redis (Job Queue) │
-│  5 tables   │               │                    │
-└─────────────┘               └────────┬───────────┘
-       ▲                               │ consume
-       │ write results                 ▼
-       │                    ┌──────────────────────┐
-       └────────────────────│  Celery Worker       │
-                            │  ┌────────────────┐  │
-                            │  │ Orchestrator   │  │
-                            │  ├────────────────┤  │
-                            │  │ Heuristic Eval │  │
-                            │  │ Tool Call Eval │  │
-                            │  │ Coherence Eval │  │
-                            │  │ LLM-as-Judge   │  │
-                            │  └────────────────┘  │
-                            └──────────────────────┘
+│                                                          │
+│   POST /ingest                                           │
+│   ├── Store conversation ──────────────► PostgreSQL      │
+│   ├── Return 202 Accepted (immediate)                    │
+│   └── BackgroundTask (after response) ──────────────┐   │
+│                                                      │   │
+│                             ┌────────────────────┐   │   │
+│                             │  Evaluation         │◄──┘  │
+│                             │  Orchestrator       │      │
+│                             │  ┌──────────────┐  │      │
+│                             │  │ Heuristic    │  │      │
+│                             │  │ Tool Call    │  │      │
+│                             │  │ Coherence    │  │      │
+│                             │  │ LLM-as-Judge │  │      │
+│                             │  └──────────────┘  │      │
+│                             └────────┬───────────┘      │
+│                                      │ write results     │
+│                                      ▼                   │
+│                                 PostgreSQL               │
+└──────────────────────────────────────────────────────────┘
 
         ┌────────────────────────────┐
         │  Streamlit Dashboard       │
@@ -55,7 +55,7 @@
 ```
 
 ### Key Design Principle: Async-First
-Ingestion (`POST /ingest`) returns **202 Accepted** immediately. Evaluation jobs run in the background via Celery + Redis. This means ingestion can handle high throughput (1000+ conversations/minute) without LLM latency blocking the HTTP response.
+Ingestion (`POST /ingest`) returns **202 Accepted** immediately. Evaluation runs in a **FastAPI BackgroundTask** — a thread pool that executes after the HTTP response is sent. No extra infrastructure needed. LLM latency (2–10s) never blocks the caller.
 
 ---
 
@@ -83,12 +83,10 @@ docker-compose up --build
 This starts:
 | Service | URL | Description |
 |---|---|---|
-| FastAPI API | http://localhost:8000 | REST API |
+| FastAPI API | http://localhost:8000 | REST API + background evaluation |
 | Swagger UI | http://localhost:8000/docs | Interactive API docs |
 | Streamlit UI | http://localhost:8501 | Dashboard |
 | PostgreSQL | localhost:5432 | Database |
-| Redis | localhost:6379 | Job queue |
-| Celery Worker | — | Background evaluation jobs |
 
 ### 3. Test It
 ```bash
@@ -250,7 +248,7 @@ Low agreement → evaluator prompt needs updating
 ## Design Decisions
 
 ### Why Async Evaluation?
-LLM inference takes 2–10 seconds. Blocking ingestion on evaluation would cap throughput at ~6 conversations/second. With async Celery workers, ingestion is I/O bound (DB write + Redis enqueue) — easily 1000+ conversations/minute.
+LLM inference takes 2–10 seconds. Blocking ingestion on evaluation would cap throughput at ~6 conversations/second. Using FastAPI `BackgroundTasks`, ingestion is I/O bound (just a DB write) and returns immediately — the LLM evaluation runs in a thread pool after the response. For higher scale, this can be swapped to a Celery + Kafka queue with one code change in `ingestion.py`.
 
 ### Why PostgreSQL + JSONB?
 Conversation data is hierarchical (turns → tool_calls → results). JSONB lets us store this flexibly while still being queryable. Avoids complex join schemas for data we often read as a whole unit.
@@ -267,10 +265,11 @@ Each evaluator is isolated behind a common `BaseEvaluator` interface. Adding a n
 
 | Scale | Bottleneck | Solution |
 |---|---|---|
-| **10x (10k/min)** | Celery worker concurrency | Add more worker replicas (`--concurrency=8`, horizontal scale) |
+| **Current** | FastAPI thread pool | Works well up to ~100 concurrent evals |
+| **10x (10k/min)** | BackgroundTask thread pool | Swap to Celery + Redis/Kafka with one change in `ingestion.py` |
 | **10x** | PostgreSQL write throughput | Add read replicas, connection pooling (PgBouncer) |
 | **100x (100k/min)** | LLM API rate limits | Sample LLM evals (10% of traffic); run heuristic+tool evals on all |
-| **100x** | Redis as broker | Migrate to Kafka for durability + replay capability |
+| **100x** | Message queue durability | Add Kafka for durability + replay capability |
 | **100x** | DB storage | Partition by `agent_version` + archive old evals to S3/cold storage |
 | **Production** | Cost | Cache LLM responses for identical conversations; batch LLM calls |
 
@@ -319,4 +318,4 @@ pytest tests/ -v
 | `AUTO_LABEL_CONFIDENCE_THRESHOLD` | `0.8` | Below this = route to human review |
 | `ANNOTATOR_AGREEMENT_THRESHOLD` | `0.6` | Below this = flag as disagreement |
 | `DATABASE_URL` | — | PostgreSQL connection string |
-| `REDIS_URL` | — | Redis connection string |
+| `REDIS_URL` | — | Redis URL (optional — only needed if Celery is re-enabled) |
