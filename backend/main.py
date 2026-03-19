@@ -8,7 +8,7 @@ Auto-generated Swagger UI is available at /docs.
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from routers import ingestion, evaluations, feedback, suggestions, meta
+from routers import ingestion, evaluations, feedback, suggestions, meta, debug
 
 app = FastAPI(
     title="AI Agent Evaluation Pipeline",
@@ -37,6 +37,7 @@ app.include_router(evaluations.router,  prefix="/evaluations",  tags=["Evaluatio
 app.include_router(feedback.router,     prefix="/feedback",     tags=["Feedback"])
 app.include_router(suggestions.router,  prefix="/suggestions",  tags=["Suggestions"])
 app.include_router(meta.router,         prefix="/meta",         tags=["Meta-Evaluation"])
+app.include_router(debug.router,        prefix="/debug",        tags=["Debug"])
 
 
 # ── Health check ──────────────────────────────────────────────────────────────
